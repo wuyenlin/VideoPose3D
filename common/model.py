@@ -5,7 +5,22 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+import math
+import torch, torchvision
 import torch.nn as nn
+from torch.nn import init
+import torch.nn.functional as F
+from torchvision import transforms
+import torchvision.transforms.functional as TF
+from torchvision import models
+from torchsummary import summary
+from torch.autograd import Variable
+
+from PIL import Image
+import numpy as np
+import matplotlib.pyplot as plt
+
+
 
 class TemporalModelBase(nn.Module):
     """
@@ -194,4 +209,120 @@ class TemporalModelOptimized1f(TemporalModelBase):
             x = res + self.drop(self.relu(self.layers_bn[2*i + 1](self.layers_conv[2*i + 1](x))))
         
         x = self.shrink(x)
+        return x
+ 
+class PositionalEncoder(nn.Module):
+    def __init__(self, d_model, max_seq_len=1000, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.dropout = nn.Dropout(dropout)
+        pe = torch.zeros(max_seq_len, d_model)
+        for pos in range(max_seq_len):
+            for i in range(0, d_model, 2):
+                pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/d_model)))
+                pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
+        pe = pe.unsqueeze(0)
+        self.pe = pe
+ 
+    def forward(self, x):
+        # make embeddings relatively larger
+        # x = x * math.sqrt(self.d_model)
+        bs, seq_len = x.size(0), x.size(1)
+        pe = self.pe[:, :seq_len, :]
+
+        pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=False)
+        if x.is_cuda:
+            pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=False).cuda()
+        for i in range(bs):
+            pe_all[i, :, :] = pe
+
+        assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
+        # print(x.is_cuda, pe_all.is_cuda)
+        x = x + pe_all
+        return self.dropout(x)    
+
+
+class MLP(nn.Module):
+    def __init__(self, input_dim=64, hidden_dim=64, output_dim=3, num_layers=3):
+        """
+        MLP or FFN mentioned in the paper
+        (3-layer perceptron with 
+            1. ReLU activation function
+            2. hidden dimension d
+            3. linear projection layer
+        )
+        In the end, FFN predicts the box coordinates (normalized), width and height;
+                linear layer + Softmax predicts LABEL.
+
+        Note: 
+        input_dim = hidden_dim = transformer.d_model
+        """
+        super().__init__()
+        self.num_layers = num_layers
+        h = [hidden_dim] * (num_layers - 1)
+        self.layers = nn.ModuleList(nn.Linear(n,k)
+                                    for n,k in zip([input_dim] + h, h + [output_dim]) )
+        # same as creating 3 linear layers: 64,64; 64,64; 64,3
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            if i < self.num_layers - 1:
+                x = F.relu(layer(x))
+            else:
+                x = layer(x)
+        return x   
+
+class smdTransformer(nn.Module):
+    def __init__(self, d_model=34, nhead=2, num_layers=12, 
+                    num_joints_in=17, num_joints_out=15):
+        super().__init__()
+        self.pe = PositionalEncoder(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        # self.conv = nn.Sequential(
+        #     nn.Conv1d(num_joints_in*2, 1024, kernel_size=3, dilation=3),
+        #     nn.Conv1d(1024, num_joints_out*3, kernel_size=3, dilation=9),
+        # )
+        self.linear = nn.Linear(num_joints_in*2, num_joints_out*3)
+
+        self.d_model = d_model
+        self.nhead = nhead
+        self.num_joints_in = num_joints_in
+        self.num_joints_out = num_joints_out
+        
+    
+    def forward(self, x, pe=False):
+        x = torch.flatten(x, start_dim=2)
+        if pe:
+            x = self.pe(x) # from [b, n, 17, 2] to [b, n, 34]
+        x = self.transformer(x) # from [b, n, 17, 2] to [b, n, 34]
+        x = self.linear(x) # [b, n, 45]
+        n, n_shrink = x.size(1), x.size(1)-26
+        ran = [(n+n_shrink)/2 - n_shrink, (n+n_shrink)/2]
+        x = x[:, int(ran[0]):int(ran[1]), :] # [b,n-26,45]
+        x = x.reshape(-1, n_shrink, self.num_joints_out, 3)
+        
+        return x
+
+class fullTransformer(nn.Module):
+    def __init__(self, d_model=34, nhead=2, 
+                num_encoder_layers=12, num_decoder_layers=12,
+                num_joints_in=17, num_joints_out=15):
+        super().__init__()
+        # encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
+        # self.transformer = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
+        # decoder_layer = nn.Trans
+        self.transformer = nn.Transformer(d_model, nhead, num_encoder_layers, num_decoder_layers)
+        # self.linear = nn.Linear(num_joints_in*2, num_joints_out*3)
+
+        self.d_model = d_model
+        self.nhead = nhead
+        self.num_joints_in = num_joints_in
+        self.num_joints_out = num_joints_out
+        
+    
+    def forward(self, x):
+        x = self.transformer(torch.flatten(x, start_dim=2)) # from [b, n, 17, 2] to [b, n, 34]
+        x = self.linear(x) # [b, n, 45]
+        x = x.reshape(2, -1, self.num_joints_out, 3)
+        
         return x
