@@ -218,15 +218,16 @@ class PositionalEncoder(nn.Module):
         self.dropout = nn.Dropout(dropout)
         pe = torch.zeros(max_seq_len, d_model)
         for pos in range(max_seq_len):
+            # for i in range(0, d_model, 1):
             for i in range(0, d_model, 2):
                 pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/d_model)))
                 pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
-        pe = pe.unsqueeze(0)
+        pe = pe.unsqueeze(0) # shape(1, seq_len, 34)
         self.pe = pe
  
     def forward(self, x):
         # make embeddings relatively larger
-        # x = x * math.sqrt(self.d_model)
+        x = x * math.sqrt(self.d_model)
         bs, seq_len = x.size(0), x.size(1)
         pe = self.pe[:, :seq_len, :]
 
@@ -237,8 +238,7 @@ class PositionalEncoder(nn.Module):
             pe_all[i, :, :] = pe
 
         assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
-        # print(x.is_cuda, pe_all.is_cuda)
-        x = x + pe_all
+        x += pe_all
         return self.dropout(x)    
 
 
@@ -272,16 +272,12 @@ class MLP(nn.Module):
         return x   
 
 class smdTransformer(nn.Module):
-    def __init__(self, d_model=34, nhead=2, num_layers=12, 
+    def __init__(self, d_model=34, nhead=2, num_layers=8, 
                     num_joints_in=17, num_joints_out=15):
         super().__init__()
         self.pe = PositionalEncoder(d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-        # self.conv = nn.Sequential(
-        #     nn.Conv1d(num_joints_in*2, 1024, kernel_size=3, dilation=3),
-        #     nn.Conv1d(1024, num_joints_out*3, kernel_size=3, dilation=9),
-        # )
         self.linear = nn.Linear(num_joints_in*2, num_joints_out*3)
 
         self.d_model = d_model
@@ -291,9 +287,9 @@ class smdTransformer(nn.Module):
         
     
     def forward(self, x, pe=False):
-        x = torch.flatten(x, start_dim=2)
+        x = torch.flatten(x, start_dim=2) # from [b, n, 17, 2] to [b, n, 34]
         if pe:
-            x = self.pe(x) # from [b, n, 17, 2] to [b, n, 34]
+            x = self.pe(x) 
         x = self.transformer(x) # from [b, n, 17, 2] to [b, n, 34]
         x = self.linear(x) # [b, n, 45]
         n, n_shrink = x.size(1), x.size(1)-26
