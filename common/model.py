@@ -6,6 +6,7 @@
 #
 
 import math
+import itertools
 import torch, torchvision
 import torch.nn as nn
 from torch.nn import init
@@ -211,37 +212,6 @@ class TemporalModelOptimized1f(TemporalModelBase):
         x = self.shrink(x)
         return x
  
-class PositionalEncoder(nn.Module):
-    def __init__(self, d_model, max_seq_len=1000, dropout=0.1):
-        super().__init__()
-        self.d_model = d_model
-        self.dropout = nn.Dropout(dropout)
-        pe = torch.zeros(max_seq_len, d_model)
-        for pos in range(max_seq_len):
-            # for i in range(0, d_model, 1):
-            for i in range(0, d_model, 2):
-                pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/d_model)))
-                pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
-        pe = pe.unsqueeze(0) # shape(1, seq_len, 34)
-        self.pe = pe
- 
-    def forward(self, x):
-        # make embeddings relatively larger
-        x = x * math.sqrt(self.d_model)
-        bs, seq_len = x.size(0), x.size(1)
-        pe = self.pe[:, :seq_len, :]
-
-        pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=False)
-        if x.is_cuda:
-            pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=False).cuda()
-        for i in range(bs):
-            pe_all[i, :, :] = pe
-
-        assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
-        x += pe_all
-        return self.dropout(x)    
-
-
 class MLP(nn.Module):
     def __init__(self, input_dim=64, hidden_dim=64, output_dim=3, num_layers=3):
         """
@@ -271,11 +241,87 @@ class MLP(nn.Module):
                 x = layer(x)
         return x   
 
+
+class PositionalEncoder(nn.Module):
+    def __init__(self, d_model, max_seq_len=1000, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.dropout = nn.Dropout(dropout)
+        pe = torch.zeros(max_seq_len, d_model)
+        # for pos in range(max_seq_len):
+        #     for i in range(0, d_model, 2):
+        for pos in range(max_seq_len):
+            for i in range(0, d_model, 2):
+                pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/d_model)))
+                pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
+        pe = pe.unsqueeze(0) # shape(1, seq_len, 34)
+        self.pe = pe
+ 
+    def forward(self, x):
+        # make embeddings relatively larger
+        x = x * math.sqrt(self.d_model)
+        bs, seq_len = x.size(0), x.size(1)
+        pe = self.pe[:, :seq_len, :]
+
+        if x.is_cuda:
+            pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=False).cuda()
+        else:
+            pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=False)
+        for i in range(bs):
+            pe_all[i, :, :] = pe
+
+        assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
+        x += pe_all
+        return self.dropout(x)    
+
+
+class tppe(nn.Module):
+    """
+    Implementation of 2D positional encoding used in TransPose
+    """
+    def __init__(self, d_model, max_seq_len=1000, dropout=0.1, bs=128):
+        super().__init__()
+        self.bs = bs
+        self.d_model = d_model
+        self.max_seq_len = max_seq_len
+        self.dropout = nn.Dropout(dropout)
+
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.pe_x = Variable(torch.zeros(bs, max_seq_len, d_model), requires_grad=False).to(device)
+        self.pe_y = Variable(torch.zeros(bs, max_seq_len, d_model), requires_grad=False).to(device)
+
+        for i in range(0, bs, 2):
+            for combi in itertools.zip_longest(range(d_model), range(max_seq_len)):
+                if combi[0] is not None:
+                    p_x = combi[0]
+                    self.pe_x[i, :, p_x] = math.sin(2*math.pi*p_x/ (d_model* 10000 ** ((2 * i)/d_model)))
+                    self.pe_x[i+1, :, p_x] = math.cos(2*math.pi*p_x/ (d_model* 10000 ** ((2 * (i+1))/d_model)))
+
+                if combi[1] is not None:
+                    p_y = combi[1]
+                    self.pe_y[i, p_y, :] = math.sin(2*math.pi*p_y/ (max_seq_len * 10000 ** ((2 * i)/d_model)))
+                    self.pe_y[i+1, p_y, :] = math.cos(2*math.pi*p_y/ (max_seq_len * 10000 ** ((2 * (i+1))/d_model)))
+ 
+
+    def forward(self, x):
+        # make embeddings relatively larger
+        x = x * math.sqrt(self.d_model)
+
+        bs, seq_len = x.size(0), x.size(1)
+        pe_x = self.pe_x[:bs, :seq_len, :]
+        pe_y = self.pe_y[:bs, :seq_len, :]
+
+        assert x.shape == pe_x.shape, "{},{}".format(x.shape, pe_x.shape)
+        assert x.shape == pe_y.shape, "{},{}".format(x.shape, pe_y.shape)
+        x = x + pe_x + pe_y
+        return self.dropout(x) 
+
 class smdTransformer(nn.Module):
     def __init__(self, d_model=34, nhead=2, num_layers=8, 
                     num_joints_in=17, num_joints_out=15):
         super().__init__()
-        self.pe = PositionalEncoder(d_model)
+        self.pe = tppe(d_model=d_model)
+        # self.pe = PositionalEncoder(d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
         self.linear = nn.Linear(num_joints_in*2, num_joints_out*3)
@@ -290,7 +336,7 @@ class smdTransformer(nn.Module):
         x = torch.flatten(x, start_dim=2) # from [b, n, 17, 2] to [b, n, 34]
         if pe:
             x = self.pe(x) 
-        x = self.transformer(x) # from [b, n, 17, 2] to [b, n, 34]
+        x = self.transformer(x) 
         x = self.linear(x) # [b, n, 45]
         n, n_shrink = x.size(1), x.size(1)-26
         ran = [(n+n_shrink)/2 - n_shrink, (n+n_shrink)/2]
