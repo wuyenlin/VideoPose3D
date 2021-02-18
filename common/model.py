@@ -5,8 +5,9 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-import math
+import os, math
 import itertools
+import matplotlib.pyplot as plt
 import torch, torchvision
 import torch.nn as nn
 from torch.nn import init
@@ -248,8 +249,6 @@ class PositionalEncoder(nn.Module):
         self.d_model = d_model
         self.dropout = nn.Dropout(dropout)
         pe = torch.zeros(max_seq_len, d_model)
-        # for pos in range(max_seq_len):
-        #     for i in range(0, d_model, 2):
         for pos in range(max_seq_len):
             for i in range(0, d_model, 2):
                 pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/d_model)))
@@ -259,21 +258,47 @@ class PositionalEncoder(nn.Module):
  
     def forward(self, x):
         # make embeddings relatively larger
-        x = x * math.sqrt(self.d_model)
+        # x = x * math.sqrt(self.d_model)
         bs, seq_len = x.size(0), x.size(1)
         pe = self.pe[:, :seq_len, :]
 
-        if x.is_cuda:
-            pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=False).cuda()
-        else:
-            pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=False)
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=True).to(device)
         for i in range(bs):
             pe_all[i, :, :] = pe
 
         assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
         x += pe_all
-        return self.dropout(x)    
+        # return self.dropout(x)    
+        return x
 
+class NewPositionalEncoder(nn.Module):
+    def __init__(self, d_model, max_seq_len=1000, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.dropout = nn.Dropout(dropout)
+        pe = torch.zeros(max_seq_len, d_model)
+        for pos in range(max_seq_len):
+            for i in range(0, d_model, 2):
+                pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/d_model)))
+                pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
+        pe = pe.unsqueeze(0) # shape(1, seq_len, 34)
+        self.pe = pe
+ 
+    def forward(self, x):
+        # make embeddings relatively larger
+        # x = x * math.sqrt(self.d_model)
+        bs, d_model,seq_len = x.size(0), x.size(1), x.size(2)
+        pe = self.pe[:, :d_model, :seq_len]
+
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        pe_all = Variable(torch.zeros(bs, d_model, seq_len), requires_grad=True).to(device)
+        for i in range(bs):
+            pe_all[i, :, :] = pe
+
+        assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
+        x += pe_all
+        return self.dropout(x)  
 
 class tppe(nn.Module):
     """
@@ -316,15 +341,15 @@ class tppe(nn.Module):
         x = x + pe_x + pe_y
         return self.dropout(x) 
 
-class smdTransformer(nn.Module):
-    def __init__(self, d_model=34, nhead=2, num_layers=8, 
-                    num_joints_in=17, num_joints_out=15):
+class firstTransformer(nn.Module):
+    def __init__(self, d_model=34, nhead=2, num_layers=6, 
+                    num_joints_in=15, num_joints_out=15):
         super().__init__()
-        self.pe = tppe(d_model=d_model)
-        # self.pe = PositionalEncoder(d_model)
+        # self.pe = tppe(d_model=d_model)
+        self.pe = PositionalEncoder(d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-        self.linear = nn.Linear(num_joints_in*2, num_joints_out*3)
+        self.linear = nn.Linear(num_joints_in*2, num_joints_out*3, bias=False)
 
         self.d_model = d_model
         self.nhead = nhead
@@ -333,28 +358,44 @@ class smdTransformer(nn.Module):
         
     
     def forward(self, x, pe=False):
-        x = torch.flatten(x, start_dim=2) # from [b, n, 17, 2] to [b, n, 34]
+        sz = x.shape[:3]
+        x = torch.flatten(x, start_dim=2)
         if pe:
             x = self.pe(x) 
         x = self.transformer(x) 
-        x = self.linear(x) # [b, n, 45]
-        n, n_shrink = x.size(1), x.size(1)-26
-        ran = [(n+n_shrink)/2 - n_shrink, (n+n_shrink)/2]
-        x = x[:, int(ran[0]):int(ran[1]), :] # [b,n-26,45]
-        x = x.reshape(-1, n_shrink, self.num_joints_out, 3)
-        
-        return x
+        x = self.linear(x) 
+        ran = [13, x.size(1)-13]
+        x = x[:, ran[0]:ran[1], :] # [b,n-26,45]
 
-class fullTransformer(nn.Module):
-    def __init__(self, d_model=34, nhead=2, 
-                num_encoder_layers=12, num_decoder_layers=12,
-                num_joints_in=17, num_joints_out=15):
+        return x.reshape(sz[0], -1, self.num_joints_out, 3)
+
+class LiftFormer(nn.Module):
+    def __init__(self, d_model=512, nhead=8, num_layers=6, 
+                    num_joints_in=17, num_joints_out=15):
         super().__init__()
-        # encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
-        # self.transformer = nn.TransformerEncoder(encoder_layer, num_encoder_layers)
-        # decoder_layer = nn.Trans
-        self.transformer = nn.Transformer(d_model, nhead, num_encoder_layers, num_decoder_layers)
-        # self.linear = nn.Linear(num_joints_in*2, num_joints_out*3)
+        self.conv_in = nn.Conv1d(num_joints_in*2, d_model, kernel_size=3, padding=1, bias=False)
+        self.pe = NewPositionalEncoder(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.conv_out = nn.Sequential(
+            nn.Conv1d(d_model, d_model, kernel_size=3, bias=False),
+            nn.BatchNorm1d(d_model, momentum=0.1),
+            nn.ReLU(inplace=False),
+            nn.Dropout(p=0.25),
+            nn.Conv1d(d_model, d_model, kernel_size=3, dilation=3, bias=False),
+            nn.BatchNorm1d(d_model, momentum=0.1),
+            nn.ReLU(inplace=False),
+            nn.Dropout(p=0.25),
+            nn.Conv1d(d_model, d_model, kernel_size=1, bias=False),
+            nn.BatchNorm1d(d_model, momentum=0.1),
+            nn.ReLU(inplace=False),
+            nn.Dropout(p=0.25),
+            nn.Conv1d(d_model, d_model, kernel_size=3, dilation=9, bias=False),
+            nn.BatchNorm1d(d_model, momentum=0.1),
+            nn.ReLU(inplace=False),
+            nn.Dropout(p=0.25),
+            nn.Conv1d(d_model, num_joints_out*3, kernel_size=1, bias=False),
+        )
 
         self.d_model = d_model
         self.nhead = nhead
@@ -363,8 +404,15 @@ class fullTransformer(nn.Module):
         
     
     def forward(self, x):
-        x = self.transformer(torch.flatten(x, start_dim=2)) # from [b, n, 17, 2] to [b, n, 34]
-        x = self.linear(x) # [b, n, 45]
-        x = x.reshape(2, -1, self.num_joints_out, 3)
+        sz = x.shape[:3]
+        x = torch.flatten(x, start_dim=2) # from [b, n, 17, 2] to [b, n, 34]
+        x = x.permute(0, 2, 1) # [b, 34, n]
+        x = self.conv_in(x) # [b, 512, n]
+        x = x.permute(0, 2, 1) 
+        x = self.transformer(self.pe(x)) 
+        x = x.permute(0, 2, 1) 
+        x = self.conv_out(x) # [b, 45, 1]
+        x = x.permute(0, 2, 1) # [b, 1, 45]
+
+        return x.reshape(sz[0], -1, self.num_joints_out, 3)
         
-        return x
