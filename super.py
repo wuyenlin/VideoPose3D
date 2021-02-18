@@ -6,6 +6,8 @@
 #
 
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
 
 from common.arguments import parse_args
 import torch
@@ -69,6 +71,41 @@ keypoints_symmetry = keypoints_metadata['keypoints_symmetry']
 kps_left, kps_right = list(keypoints_symmetry[0]), list(keypoints_symmetry[1])
 joints_left, joints_right = list(dataset.skeleton().joints_left()), list(dataset.skeleton().joints_right())
 keypoints = keypoints['positions_2d'].item()
+pt = keypoints['Train/S1']["Box 1 chunk1"][0] # shape (28,17,2)
+
+
+def humaneva_order(kpts):
+    new = np.zeros(kpts.shape)
+    new = new[:, :-2, :]
+    bs = kpts.shape[0]
+    for b in range(bs):
+        old = kpts[b, :, :]
+        item = new[b, :, :]
+        item[0,:] = (old[11,:] + old[12,:])/2
+        item[1,:] = (old[0,:] + item[0,:])/2
+        item[2,:] = old[6,:]
+        item[3,:] = old[8,:]
+        item[4,:] = old[10,:]
+        item[5,:] = old[5,:]
+        item[6,:] = old[7,:]
+        item[7,:] = old[9,:]
+        item[8,:] = old[12,:]
+        item[9,:] = old[14,:]
+        item[10,:] = old[16,:]
+        item[11,:] = old[11,:]
+        item[12,:] = old[13,:]
+        item[13,:] = old[15,:]
+        item[14,:] = old[0,:]
+    assert new.shape[1:] == (15, 2)
+
+def rearrange(keypoints):
+    for folder in keypoints.keys():
+        for chunk in keypoints[folder].keys():
+            pt_list = keypoints[folder][chunk]
+            for item in pt_list:
+                humaneva_order(item)
+
+rearrange(keypoints)
 
 for subject in dataset.subjects():
     assert subject in keypoints, 'Subject {} is missing from the 2D detections dataset'.format(subject)
@@ -174,21 +211,10 @@ num_joints_out = dataset.skeleton().num_joints()
 
 
 filter_widths = [int(x) for x in args.architecture.split(',')]
-# if not args.disable_optimizations and not args.dense and args.stride == 1:
-#     # Use optimized model for single-frame predictions
-#     model_pos_train = TemporalModelOptimized1f(num_joints_in, in_features, num_joints_out,
-#                                 filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels)
-# else:
-#     # When incompatible settings are detected (stride > 1, dense filters, or disabled optimization) fall back to normal model
-#     model_pos_train = TemporalModel(num_joints_in, in_features, num_joints_out,
-#                                 filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels,
-#                                 dense=args.dense)
-model_pos_train = smdTransformer(num_joints_in=num_joints_in)
-model_pos = model_pos_train
 
-# model_pos = TemporalModel(num_joints_in, in_features, num_joints_out,
-#                             filter_widths=[3,3,3,3,3], causal=args.causal, dropout=args.dropout, channels=args.channels,
-#                             dense=args.dense)
+# model_pos_train = LiftFormer(num_joints_in=num_joints_in)
+model_pos_train = firstTransformer(num_joints_in=num_joints_in)
+model_pos = model_pos_train
 
 """"""""""""""""""""""""""""
 # model_pos.cuda()
@@ -198,7 +224,6 @@ model_pos = model_pos_train
 """""""""""""""""""""""""""""""""""
 
 receptive_field = 27
-# receptive_field = model_pos.receptive_field()
 print('INFO: Receptive field: {} frames'.format(receptive_field))
 pad = (receptive_field - 1) // 2 # Padding on each side
 if args.causal:
@@ -301,9 +326,7 @@ if not args.evaluate:
             optimizer.zero_grad()
 
             # Predict 3D poses
-            # print("Input shape: {}".format(inputs_2d.shape))
             predicted_3d_pos = model_pos_train(inputs_2d)
-            # print("Output shape: {}".format(predicted_3d_pos.shape))
             loss_3d_pos = mpjpe(predicted_3d_pos, inputs_3d)
             epoch_loss_3d_train += inputs_3d.shape[0]*inputs_3d.shape[1] * loss_3d_pos.item()
             N += inputs_3d.shape[0]*inputs_3d.shape[1]
@@ -338,10 +361,6 @@ if not args.evaluate:
 
                     # Predict 3D poses
                     predicted_3d_pos = model_pos(inputs_2d)
-                    # print("In no_eval loop:")
-                    # print("Input_2d shape: {}".format(inputs_2d.shape))
-                    # print("3d_pos shape: {}".format(predicted_3d_pos.shape))
-                    # print("Input_3d shape: {}".format(inputs_3d.shape))
                     loss_3d_pos = mpjpe(predicted_3d_pos, inputs_3d)
                     epoch_loss_3d_valid += inputs_3d.shape[0]*inputs_3d.shape[1] * loss_3d_pos.item()
                     N += inputs_3d.shape[0]*inputs_3d.shape[1]
@@ -400,10 +419,6 @@ if not args.evaluate:
             param_group['lr'] *= lr_decay
         epoch += 1
         
-        # Decay BatchNorm momentum
-        # momentum = initial_momentum * np.exp(-epoch/args.epochs * np.log(initial_momentum/final_momentum))
-        # model_pos_train.set_bn_momentum(momentum)
-
         # Save checkpoint if necessary
         if epoch % args.checkpoint_frequency == 0:
             chk_path = os.path.join(args.checkpoint, 'epoch_{}.bin'.format(epoch))
@@ -415,8 +430,6 @@ if not args.evaluate:
                 'random_state': train_generator.random_state(),
                 'optimizer': optimizer.state_dict(),
                 'model_pos': model_pos_train.state_dict(),
-                # 'model_traj': model_traj_train.state_dict() if semi_supervised else None,
-                # 'random_state_semi': semi_generator.random_state() if semi_supervised else None,
             }, chk_path)
             
         # Save training curves after every epoch, as .png images (if requested)
