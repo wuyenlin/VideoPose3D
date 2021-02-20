@@ -20,6 +20,7 @@ import os
 import sys
 import errno
 
+from common.transformer import *
 from common.camera import *
 from common.model import *
 from common.loss import *
@@ -66,13 +67,13 @@ for subject in dataset.subjects():
 
 print('Loading 2D detections...')
 keypoints = np.load('data/data_2d_' + args.dataset + '_' + args.keypoints + '.npz', allow_pickle=True)
+
 keypoints_metadata = keypoints['metadata'].item()
 keypoints_symmetry = keypoints_metadata['keypoints_symmetry']
-kps_left, kps_right = list(keypoints_symmetry[0]), list(keypoints_symmetry[1])
+# kps_left, kps_right = list(keypoints_symmetry[0]), list(keypoints_symmetry[1])
 joints_left, joints_right = list(dataset.skeleton().joints_left()), list(dataset.skeleton().joints_right())
+kps_left, kps_right = joints_left, joints_right
 keypoints = keypoints['positions_2d'].item()
-pt = keypoints['Train/S1']["Box 1 chunk1"][0] # shape (28,17,2)
-
 
 def humaneva_order(kpts):
     new = np.zeros(kpts.shape)
@@ -97,15 +98,7 @@ def humaneva_order(kpts):
         item[13,:] = old[15,:]
         item[14,:] = old[0,:]
     assert new.shape[1:] == (15, 2)
-
-def rearrange(keypoints):
-    for folder in keypoints.keys():
-        for chunk in keypoints[folder].keys():
-            pt_list = keypoints[folder][chunk]
-            for item in pt_list:
-                humaneva_order(item)
-
-rearrange(keypoints)
+    return new
 
 for subject in dataset.subjects():
     assert subject in keypoints, 'Subject {} is missing from the 2D detections dataset'.format(subject)
@@ -125,7 +118,9 @@ for subject in dataset.subjects():
                 keypoints[subject][action][cam_idx] = keypoints[subject][action][cam_idx][:mocap_length]
 
         assert len(keypoints[subject][action]) == len(dataset[subject][action]['positions_3d'])
-        
+
+
+# where coordinate normalization takes place
 for subject in keypoints.keys():
     for action in keypoints[subject]:
         for cam_idx, kps in enumerate(keypoints[subject][action]):
@@ -156,10 +151,11 @@ def fetch(subjects, action_filter=None, subset=1, parse_3d_poses=True):
                         break
                 if not found:
                     continue
-                
+           
             poses_2d = keypoints[subject][action]
             for i in range(len(poses_2d)): # Iterate across cameras
-                out_poses_2d.append(poses_2d[i])
+                reorder = humaneva_order(poses_2d[i])
+                out_poses_2d.append(reorder)
                 
             if subject in dataset.cameras():
                 cams = dataset.cameras()[subject]
@@ -209,11 +205,16 @@ in_features = poses_valid_2d[0].shape[-1]
 num_joints_out = dataset.skeleton().num_joints()
 ###
 
-
 filter_widths = [int(x) for x in args.architecture.split(',')]
 
 # model_pos_train = LiftFormer(num_joints_in=num_joints_in)
-model_pos_train = firstTransformer(num_joints_in=num_joints_in)
+# model_pos_train = firstTransformer(num_joints_in=num_joints_in)
+model_pos_train = Transformer(num_joints_in=num_joints_in, num_joints_out=num_joints_out)
+# model_pos_train = TemporalModelOptimized1f(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], dataset.skeleton().num_joints(),
+#                             filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels)
+# model_pos = TemporalModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], dataset.skeleton().num_joints(),
+#                             filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels,
+#                             dense=args.dense)
 model_pos = model_pos_train
 
 """"""""""""""""""""""""""""
@@ -326,6 +327,7 @@ if not args.evaluate:
             optimizer.zero_grad()
 
             # Predict 3D poses
+            # print("2d input shape: {}".format(inputs_2d.shape))
             predicted_3d_pos = model_pos_train(inputs_2d)
             loss_3d_pos = mpjpe(predicted_3d_pos, inputs_3d)
             epoch_loss_3d_train += inputs_3d.shape[0]*inputs_3d.shape[1] * loss_3d_pos.item()
@@ -609,7 +611,9 @@ else:
         for subject, action in actions:
             poses_2d = keypoints[subject][action]
             for i in range(len(poses_2d)): # Iterate across cameras
-                out_poses_2d.append(poses_2d[i])
+                # out_poses_2d.append(poses_2d[i])
+                reorder = humaneva_order(poses_2d[i])
+                out_poses_2d.append(reorder)
 
             poses_3d = dataset[subject][action]['positions_3d']
             assert len(poses_3d) == len(poses_2d), 'Camera count mismatch'
