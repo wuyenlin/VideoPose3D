@@ -342,10 +342,9 @@ class tppe(nn.Module):
         return self.dropout(x) 
 
 class firstTransformer(nn.Module):
-    def __init__(self, d_model=34, nhead=2, num_layers=6, 
+    def __init__(self, d_model=30, nhead=2, num_layers=6, 
                     num_joints_in=15, num_joints_out=15):
         super().__init__()
-        # self.pe = tppe(d_model=d_model)
         self.pe = PositionalEncoder(d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
