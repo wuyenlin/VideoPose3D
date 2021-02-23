@@ -244,6 +244,9 @@ class MLP(nn.Module):
 
 
 class PositionalEncoder(nn.Module):
+    """
+    Original PE from Attention is All You Need
+    """
     def __init__(self, d_model, max_seq_len=1000, dropout=0.1):
         super().__init__()
         self.d_model = d_model
@@ -269,36 +272,7 @@ class PositionalEncoder(nn.Module):
 
         assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
         x += pe_all
-        # return self.dropout(x)    
         return x
-
-class NewPositionalEncoder(nn.Module):
-    def __init__(self, d_model, max_seq_len=1000, dropout=0.1):
-        super().__init__()
-        self.d_model = d_model
-        self.dropout = nn.Dropout(dropout)
-        pe = torch.zeros(max_seq_len, d_model)
-        for pos in range(max_seq_len):
-            for i in range(0, d_model, 2):
-                pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/d_model)))
-                pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
-        pe = pe.unsqueeze(0) # shape(1, seq_len, 34)
-        self.pe = pe
- 
-    def forward(self, x):
-        # make embeddings relatively larger
-        # x = x * math.sqrt(self.d_model)
-        bs, d_model,seq_len = x.size(0), x.size(1), x.size(2)
-        pe = self.pe[:, :d_model, :seq_len]
-
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        pe_all = Variable(torch.zeros(bs, d_model, seq_len), requires_grad=True).to(device)
-        for i in range(bs):
-            pe_all[i, :, :] = pe
-
-        assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
-        x += pe_all
-        return self.dropout(x)  
 
 class tppe(nn.Module):
     """
@@ -339,13 +313,37 @@ class tppe(nn.Module):
         assert x.shape == pe_x.shape, "{},{}".format(x.shape, pe_x.shape)
         assert x.shape == pe_y.shape, "{},{}".format(x.shape, pe_y.shape)
         x = x + pe_x + pe_y
-        return self.dropout(x) 
+        return x
+
+class myPositionalEncoder(nn.Module):
+    def __init__(self, d_model, bs=128, max_seq_len=1000, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.dropout = nn.Dropout(dropout)
+        pe = torch.zeros(max_seq_len, bs)
+        for pos in range(max_seq_len):
+            for i in range(0, bs, 2):
+                pe[pos, i] = math.sin(pos*math.pi / (10000 ** ((2 * i)/bs)))
+                pe[pos, i + 1] = math.cos(pos*math.pi / (10000 ** ((2 * (i + 1))/bs)))
+        pe = pe.unsqueeze(0).permute(2,1,0)
+        pe = pe.repeat(1,1,d_model)
+        self.pe = pe
+ 
+    def forward(self, x):
+        bs, seq_len = x.size(0), x.size(1)
+        pe = self.pe[:bs, :seq_len, :]
+
+        pe = pe.cuda() if x.is_cuda else pe
+
+        assert x.shape == pe.shape, "{},{}".format(x.shape, pe.shape)
+        return x + pe
+
 
 class firstTransformer(nn.Module):
     def __init__(self, d_model=30, nhead=2, num_layers=6, 
                     num_joints_in=15, num_joints_out=15):
         super().__init__()
-        self.pe = PositionalEncoder(d_model)
+        self.pe = myPositionalEncoder(d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
         self.linear = nn.Linear(num_joints_in*2, num_joints_out*3, bias=False)
@@ -356,45 +354,28 @@ class firstTransformer(nn.Module):
         self.num_joints_out = num_joints_out
         
     
-    def forward(self, x, pe=False):
+    def forward(self, x, pe=True):
         sz = x.shape[:3]
         x = torch.flatten(x, start_dim=2)
         if pe:
             x = self.pe(x) 
         x = self.transformer(x) 
-        x = self.linear(x) 
-        ran = [13, x.size(1)-13]
+
+        x = self.linear(x)
+        ran = [1, x.size(1)-1]
         x = x[:, ran[0]:ran[1], :] # [b,n-26,45]
 
         return x.reshape(sz[0], -1, self.num_joints_out, 3)
 
 class LiftFormer(nn.Module):
     def __init__(self, d_model=512, nhead=8, num_layers=6, 
-                    num_joints_in=17, num_joints_out=15):
+                    num_joints_in=15, num_joints_out=15):
         super().__init__()
-        self.conv_in = nn.Conv1d(num_joints_in*2, d_model, kernel_size=3, padding=1, bias=False)
-        self.pe = NewPositionalEncoder(d_model)
+        self.linear_in = nn.Linear(num_joints_in*2, d_model)
+        self.pe = myPositionalEncoder(d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-        self.conv_out = nn.Sequential(
-            nn.Conv1d(d_model, d_model, kernel_size=3, bias=False),
-            nn.BatchNorm1d(d_model, momentum=0.1),
-            nn.ReLU(inplace=False),
-            nn.Dropout(p=0.25),
-            nn.Conv1d(d_model, d_model, kernel_size=3, dilation=3, bias=False),
-            nn.BatchNorm1d(d_model, momentum=0.1),
-            nn.ReLU(inplace=False),
-            nn.Dropout(p=0.25),
-            nn.Conv1d(d_model, d_model, kernel_size=1, bias=False),
-            nn.BatchNorm1d(d_model, momentum=0.1),
-            nn.ReLU(inplace=False),
-            nn.Dropout(p=0.25),
-            nn.Conv1d(d_model, d_model, kernel_size=3, dilation=9, bias=False),
-            nn.BatchNorm1d(d_model, momentum=0.1),
-            nn.ReLU(inplace=False),
-            nn.Dropout(p=0.25),
-            nn.Conv1d(d_model, num_joints_out*3, kernel_size=1, bias=False),
-        )
+        self.liftformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.linear_out = nn.Linear(d_model, num_joints_out*3)
 
         self.d_model = d_model
         self.nhead = nhead
@@ -405,13 +386,11 @@ class LiftFormer(nn.Module):
     def forward(self, x):
         sz = x.shape[:3]
         x = torch.flatten(x, start_dim=2) # from [b, n, 17, 2] to [b, n, 34]
-        x = x.permute(0, 2, 1) # [b, 34, n]
-        x = self.conv_in(x) # [b, 512, n]
-        x = x.permute(0, 2, 1) 
-        x = self.transformer(self.pe(x)) 
-        x = x.permute(0, 2, 1) 
-        x = self.conv_out(x) # [b, 45, 1]
-        x = x.permute(0, 2, 1) # [b, 1, 45]
+        x = self.pe(self.linear_in(x))
+        x = self.liftformer(x) 
+        x = self.linear_out(x)
+        ran = [13, x.size(1)-13]
+        x = x[:, ran[0]:ran[1], :] # [b,n-26,45]
 
         return x.reshape(sz[0], -1, self.num_joints_out, 3)
         
