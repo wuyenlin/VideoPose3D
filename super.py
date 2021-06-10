@@ -6,6 +6,7 @@
 #
 
 import numpy as np
+from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib
 
@@ -20,7 +21,6 @@ import os
 import sys
 import errno
 
-from common.transformer import *
 from common.camera import *
 from common.model import *
 from common.loss import *
@@ -65,8 +65,9 @@ for subject in dataset.subjects():
                 positions_3d.append(pos_3d)
             anim['positions_3d'] = positions_3d
 
-print('Loading 2D detections...')
-keypoints = np.load('data/data_2d_' + args.dataset + '_' + args.keypoints + '.npz', allow_pickle=True)
+filename = 'data/data_2d_' + args.dataset + '_' + args.keypoints + '.npz'
+print('Loading 2D detections from {} ...'.format(filename))
+keypoints = np.load(filename, allow_pickle=True)
 
 keypoints_metadata = keypoints['metadata'].item()
 keypoints_symmetry = keypoints_metadata['keypoints_symmetry']
@@ -76,6 +77,10 @@ kps_left, kps_right = joints_left, joints_right
 keypoints = keypoints['positions_2d'].item()
 
 def humaneva_order(kpts):
+    """
+    This function converts 17 detected kpts in COCO
+    to the order of 15 kpts used in HumanEva.
+    """
     new = np.zeros(kpts.shape)
     new = new[:, :-2, :]
     bs = kpts.shape[0]
@@ -100,9 +105,12 @@ def humaneva_order(kpts):
     assert new.shape[1:] == (15, 2)
     return new
 
-for subject in dataset.subjects():
+for subject in dataset.subjects(): # ['Train/S1', 'Train/S2', 'Train/S3', 'Validate/S1', 'Validate/S2', 'Validate/S3']
     assert subject in keypoints, 'Subject {} is missing from the 2D detections dataset'.format(subject)
-    for action in dataset[subject].keys():
+    for action in dataset[subject].keys(): 
+        # ['Walking 1 chunk0', 'Walking 1 chunk2', 'Walking 1 chunk4', 'Gestures 1 chunk0', 
+        # 'Gestures 1 chunk2', 'Gestures 1 chunk4', 'Gestures 1 chunk6', 'Gestures 1 chunk8', 
+        # 'Box 1 chunk0', 'Jog 1 chunk0']
         assert action in keypoints[subject], 'Action {} of subject {} is missing from the 2D detections dataset'.format(action, subject)
         if 'positions_3d' not in dataset[subject][action]:
             continue
@@ -207,24 +215,12 @@ num_joints_out = dataset.skeleton().num_joints()
 
 filter_widths = [int(x) for x in args.architecture.split(',')]
 
-# model_pos_train = LiftFormer(num_joints_in=num_joints_in)
+model_pos_train = LiftFormer(num_joints_in=num_joints_in)
 # model_pos_train = firstTransformer(num_joints_in=num_joints_in)
-model_pos_train = Transformer(num_joints_in=num_joints_in, num_joints_out=num_joints_out)
-# model_pos_train = TemporalModelOptimized1f(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], dataset.skeleton().num_joints(),
-#                             filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels)
-# model_pos = TemporalModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], dataset.skeleton().num_joints(),
-#                             filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels,
-#                             dense=args.dense)
+# model_pos_train = fullTransformer(num_joints_in=num_joints_in)
 model_pos = model_pos_train
 
-""""""""""""""""""""""""""""
-# model_pos.cuda()
-# print(model_pos)
-# summary(model_pos, (243,17,2))
-
-"""""""""""""""""""""""""""""""""""
-
-receptive_field = 27
+receptive_field = 1
 print('INFO: Receptive field: {} frames'.format(receptive_field))
 pad = (receptive_field - 1) // 2 # Padding on each side
 if args.causal:
@@ -327,8 +323,8 @@ if not args.evaluate:
             optimizer.zero_grad()
 
             # Predict 3D poses
-            # print("2d input shape: {}".format(inputs_2d.shape))
             predicted_3d_pos = model_pos_train(inputs_2d)
+            print(predicted_3d_pos.shape)
             loss_3d_pos = mpjpe(predicted_3d_pos, inputs_3d)
             epoch_loss_3d_train += inputs_3d.shape[0]*inputs_3d.shape[1] * loss_3d_pos.item()
             N += inputs_3d.shape[0]*inputs_3d.shape[1]
@@ -455,7 +451,7 @@ if not args.evaluate:
             plt.close('all')
 
 # Evaluate
-def evaluate(test_generator, action=None, return_predictions=False, use_trajectory_model=False):
+def evaluate(test_generator, action=None, return_predictions=False, use_trajectory_model=False, render_mode=args.render):
     epoch_loss_3d_pos = 0
     epoch_loss_3d_pos_procrustes = 0
     epoch_loss_3d_pos_scale = 0
@@ -468,12 +464,23 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
         N = 0
         for _, batch, batch_2d in test_generator.next_epoch():
             inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
+            if render_mode:
+                print("Original {}".format(inputs_2d.shape))
+
+                for i in range(inputs_2d.shape[0]):
+                    rearrange = inputs_2d[:,:,:-2,:]
+                    rearrange_layer = humaneva_order(inputs_2d[i,:,:,:])
+                    rearrange[i,:,:,:] = torch.from_numpy(rearrange_layer)
+                inputs_2d = rearrange
+                print("New {}".format(inputs_2d.shape))
             if torch.cuda.is_available():
                 inputs_2d = inputs_2d.cuda()
+
 
             # Positional model
             if not use_trajectory_model:
                 predicted_3d_pos = model_pos(inputs_2d)
+                # print(predicted_3d_pos.shape)
             else:
                 predicted_3d_pos = model_traj(inputs_2d)
 
@@ -538,6 +545,9 @@ if args.render:
     if ground_truth is None:
         print('INFO: this action is unlabeled. Ground truth will not be rendered.')
         
+    joints_left = [2, 3, 4, 8, 9, 10]
+    joints_right = [5, 6, 7, 11, 12, 13]
+
     gen = UnchunkedGenerator(None, None, [input_keypoints],
                              pad=pad, causal_shift=causal_shift, augment=args.test_time_augmentation,
                              kps_left=kps_left, kps_right=kps_right, joints_left=joints_left, joints_right=joints_right)
