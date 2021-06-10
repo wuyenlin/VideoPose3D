@@ -166,9 +166,12 @@ def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrat
                 col = 'red' if j in skeleton.joints_right() else 'black'
                 for n, ax in enumerate(ax_3d):
                     pos = poses[n][i]
-                    lines_3d[n].append(ax.plot([pos[j, 0], pos[j_parent, 0]],
-                                               [pos[j, 1], pos[j_parent, 1]],
-                                               [pos[j, 2], pos[j_parent, 2]], zdir='z', c=col))
+                    try:
+                        lines_3d[n].append(ax.plot([pos[j, 0], pos[j_parent, 0]],
+                                                [pos[j, 1], pos[j_parent, 1]],
+                                                [pos[j, 2], pos[j_parent, 2]], zdir='z', c=col))
+                    except IndexError:
+                        pass
 
             points = ax_in.scatter(*keypoints[i].T, 10, color=colors_2d, edgecolors='white', zorder=10)
 
@@ -182,13 +185,16 @@ def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrat
                 
                 if len(parents) == keypoints.shape[1] and keypoints_metadata['layout_name'] != 'coco':
                     lines[j-1][0].set_data([keypoints[i, j, 0], keypoints[i, j_parent, 0]],
-                                           [keypoints[i, j, 1], keypoints[i, j_parent, 1]])
+                                        [keypoints[i, j, 1], keypoints[i, j_parent, 1]])
 
                 for n, ax in enumerate(ax_3d):
-                    pos = poses[n][i]
-                    lines_3d[n][j-1][0].set_xdata(np.array([pos[j, 0], pos[j_parent, 0]]))
-                    lines_3d[n][j-1][0].set_ydata(np.array([pos[j, 1], pos[j_parent, 1]]))
-                    lines_3d[n][j-1][0].set_3d_properties(np.array([pos[j, 2], pos[j_parent, 2]]), zdir='z')
+                    try:
+                        pos = poses[n][i]
+                        lines_3d[n][j-1][0].set_xdata(np.array([pos[j, 0], pos[j_parent, 0]]))
+                        lines_3d[n][j-1][0].set_ydata(np.array([pos[j, 1], pos[j_parent, 1]]))
+                        lines_3d[n][j-1][0].set_3d_properties(np.array([pos[j, 2], pos[j_parent, 2]]), zdir='z')
+                    except IndexError:
+                        pass
 
             points.set_offsets(keypoints[i])
         
