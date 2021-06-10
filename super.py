@@ -456,10 +456,10 @@ if not args.evaluate:
 
 # Evaluate
 def evaluate(test_generator, action=None, return_predictions=False, use_trajectory_model=False):
-    epoch_loss_3d_pos = 0
-    epoch_loss_3d_pos_procrustes = 0
-    epoch_loss_3d_pos_scale = 0
-    epoch_loss_3d_vel = 0
+    epoch_loss_e0 = 0
+    epoch_loss_e1 = 0
+    epoch_loss_e2 = 0
+    epoch_loss_e3 = 0
     with torch.no_grad():
         if not use_trajectory_model:
             model_pos.eval()
@@ -495,36 +495,34 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
             if test_generator.augment_enabled():
                 inputs_3d = inputs_3d[:1]
 
-            error = mpjpe(predicted_3d_pos, inputs_3d)
-            epoch_loss_3d_pos_scale += inputs_3d.shape[0]*inputs_3d.shape[1] * n_mpjpe(predicted_3d_pos, inputs_3d).item()
+            e0 = mpjpe(predicted_3d_pos, inputs_3d)
+            e1 = maev(predicted_3d_pos, inputs_3d)
+            e2 = mbve(predicted_3d_pos, inputs_3d)
+            e3 = meae(predicted_3d_pos, inputs_3d)
 
-            epoch_loss_3d_pos += inputs_3d.shape[0]*inputs_3d.shape[1] * error.item()
+            epoch_loss_e0 += inputs_3d.shape[0]*inputs_3d.shape[1] * e0.item()
+            epoch_loss_e1 += inputs_3d.shape[0]*inputs_3d.shape[1] * e1.item()
+            epoch_loss_e2 += inputs_3d.shape[0]*inputs_3d.shape[1] * e2.item()
+            epoch_loss_e3 += inputs_3d.shape[0]*inputs_3d.shape[1] * e3.item()
             N += inputs_3d.shape[0] * inputs_3d.shape[1]
             
-            inputs = inputs_3d.cpu().numpy().reshape(-1, inputs_3d.shape[-2], inputs_3d.shape[-1])
-            predicted_3d_pos = predicted_3d_pos.cpu().numpy().reshape(-1, inputs_3d.shape[-2], inputs_3d.shape[-1])
-
-            epoch_loss_3d_pos_procrustes += inputs_3d.shape[0]*inputs_3d.shape[1] * p_mpjpe(predicted_3d_pos, inputs)
-
-            # Compute velocity error
-            epoch_loss_3d_vel += inputs_3d.shape[0]*inputs_3d.shape[1] * mean_velocity_error(predicted_3d_pos, inputs)
             
     if action is None:
         print('----------')
     else:
         print('----'+action+'----')
-    e1 = (epoch_loss_3d_pos / N)*1000
-    e2 = (epoch_loss_3d_pos_procrustes / N)*1000
-    e3 = (epoch_loss_3d_pos_scale / N)*1000
-    ev = (epoch_loss_3d_vel / N)*1000
+    e0 = (epoch_loss_e0 / N)*1000
+    e1 = (epoch_loss_e1 / N)*1000
+    e2 = (epoch_loss_e2 / N)*1000
+    e3 = (epoch_loss_e3 / N)*1000
     print('Test time augmentation:', test_generator.augment_enabled())
-    print('Protocol #1 Error (MPJPE):', e1, 'mm')
-    print('Protocol #2 Error (P-MPJPE):', e2, 'mm')
-    print('Protocol #3 Error (N-MPJPE):', e3, 'mm')
-    print('Velocity Error (MPJVE):', ev, 'mm')
+    print('Protocol #0 Error (MPJPE):', e0, 'mm')
+    print('Protocol #1 Error (MAEV):', e1, 'mm')
+    print('Protocol #2 Error (MBVE):', e2, 'mm')
+    print('Protocol #3 Error (MEAE):', e3, 'mm')
     print('----------')
 
-    return e1, e2, e3, ev
+    return e0, e1, e2, e3
 
 
 if args.render:
