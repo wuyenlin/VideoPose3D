@@ -11,7 +11,7 @@ from common.skeleton import Skeleton
 from common.mocap_dataset import MocapDataset
 from common.camera import normalize_screen_coordinates, image_coordinates
 from common.h36m_dataset import h36m_skeleton
-       
+from common.humaneva_dataset import humaneva_skeleton
 
 custom_camera_params = {
     'id': None,
@@ -26,7 +26,8 @@ custom_camera_params = {
 
 class CustomDataset(MocapDataset):
     def __init__(self, detections_path, remove_static_joints=True):
-        super().__init__(fps=None, skeleton=h36m_skeleton)        
+        # super().__init__(fps=None, skeleton=h36m_skeleton)        
+        super().__init__(fps=None, skeleton=humaneva_skeleton)        
         
         # Load serialized dataset
         data = np.load(detections_path, allow_pickle=True)
@@ -53,11 +54,12 @@ class CustomDataset(MocapDataset):
                 }
             }
                 
-        if remove_static_joints:
+        if remove_static_joints and self.skeleton=="h36m_skeleton":
             # Bring the skeleton to 17 joints instead of the original 32
             self.remove_joints([4, 5, 9, 10, 11, 16, 20, 21, 22, 23, 24, 28, 29, 30, 31])
             
             # Rewire shoulders to the correct parents
+            print(len(self._skeleton._parents))
             self._skeleton._parents[11] = 8
             self._skeleton._parents[14] = 8
             
