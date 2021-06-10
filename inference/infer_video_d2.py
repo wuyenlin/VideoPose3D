@@ -136,7 +136,7 @@ def main(args):
             segments.append(None)
             keypoints.append(cls_keyps)
 
-        
+
         # Video resolution
         metadata = {
             'w': im.shape[1],
