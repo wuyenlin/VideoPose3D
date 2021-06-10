@@ -256,19 +256,16 @@ class PositionalEncoder(nn.Module):
             for i in range(0, d_model, 2):
                 pe[pos, i] = math.sin(pos / (10000 ** ((2 * i)/d_model)))
                 pe[pos, i + 1] = math.cos(pos / (10000 ** ((2 * (i + 1))/d_model)))
-        pe = pe.unsqueeze(0) # shape(1, seq_len, 34)
+
         self.pe = pe
+        if torch.cuda.is_available():
+            self.pe = pe.cuda()
  
     def forward(self, x):
-        # make embeddings relatively larger
-        # x = x * math.sqrt(self.d_model)
-        bs, seq_len = x.size(0), x.size(1)
-        pe = self.pe[:, :seq_len, :]
-
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        pe_all = Variable(torch.zeros(bs, seq_len, self.d_model), requires_grad=True).to(device)
-        for i in range(bs):
-            pe_all[i, :, :] = pe
+        bs, seq_len, d_model = x.size(0), x.size(1), x.size(2)
+        x *= math.sqrt(d_model)
+        pe = self.pe[:seq_len, :d_model]
+        pe_all = pe.repeat(bs, 1, 1)
 
         assert x.shape == pe_all.shape, "{},{}".format(x.shape, pe_all.shape)
         x += pe_all
@@ -283,7 +280,6 @@ class tppe(nn.Module):
         self.bs = bs
         self.d_model = d_model
         self.max_seq_len = max_seq_len
-        self.dropout = nn.Dropout(dropout)
 
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.pe_x = Variable(torch.zeros(bs, max_seq_len, d_model), requires_grad=False).to(device)
@@ -303,8 +299,6 @@ class tppe(nn.Module):
  
 
     def forward(self, x):
-        # make embeddings relatively larger
-        x = x * math.sqrt(self.d_model)
 
         bs, seq_len = x.size(0), x.size(1)
         pe_x = self.pe_x[:bs, :seq_len, :]
@@ -340,41 +334,63 @@ class myPositionalEncoder(nn.Module):
 
 
 class firstTransformer(nn.Module):
-    def __init__(self, d_model=30, nhead=2, num_layers=6, 
-                    num_joints_in=15, num_joints_out=15):
+    def __init__(self, d_model=1, d_embed=64, nhead=1, num_layers=6, 
+                    num_joints_in=15, num_joints_out=15,
+                    dim_feedforward=2048, meth=2):
         super().__init__()
-        self.pe = myPositionalEncoder(d_model)
-        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-        self.linear = nn.Linear(num_joints_in*2, num_joints_out*3, bias=False)
+        if meth==1:
+            self.pe = myPositionalEncoder(d_model)
+            encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward)
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+            self.linear = nn.Linear(num_joints_in*2, num_joints_out*3, bias=False)
+        elif meth==2:
+            # self.lin_in = nn.Linear(d_model, d_embed, bias=False)
+            self.pe = PositionalEncoder(d_model)
+            encoder_layer = nn.TransformerEncoderLayer(d_embed, nhead, dim_feedforward)
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+            self.lin_out = nn.Linear(num_joints_out*2, num_joints_out*3, bias=False)
 
+        self.meth = meth
         self.d_model = d_model
         self.nhead = nhead
         self.num_joints_in = num_joints_in
         self.num_joints_out = num_joints_out
         
     
-    def forward(self, x, pe=True):
+    def forward(self, x, pe=True, meth=2):
         sz = x.shape[:3]
-        x = torch.flatten(x, start_dim=2)
-        if pe:
-            x = self.pe(x) 
-        x = self.transformer(x) 
+        if meth==1:
+            x = torch.flatten(x, start_dim=2)
+            if pe:
+                x = self.pe(x) 
+            x = self.transformer(x) 
+            x = self.linear(x)
+            # ran = [13, x.size(1)-13]
+            # x = x[:, ran[0]:ran[1], :] # [b,n-26,45]
 
-        x = self.linear(x)
-        ran = [1, x.size(1)-1]
-        x = x[:, ran[0]:ran[1], :] # [b,n-26,45]
+        elif meth==2:
+            x = torch.flatten(x, start_dim=2)
+            x = x.permute(2,0,1) # (128,1,30) -> (30, 128, 1)
+            if pe:
+                x = self.pe(x) 
+            x = self.transformer(x)
+            x = x.permute(1,2,0) # (30, 128, 1) -> (128, 1, 30)
+            x = self.lin_out(x)
+
 
         return x.reshape(sz[0], -1, self.num_joints_out, 3)
 
 class LiftFormer(nn.Module):
     def __init__(self, d_model=512, nhead=8, num_layers=6, 
-                    num_joints_in=15, num_joints_out=15):
+                    num_joints_in=15, num_joints_out=15,
+                    dropout=0.1):
         super().__init__()
         self.linear_in = nn.Linear(num_joints_in*2, d_model)
-        self.pe = myPositionalEncoder(d_model)
+        self.pe = PositionalEncoder(d_model)
+        self.tpe = myPositionalEncoder(d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model, nhead)
         self.liftformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.dropout = nn.Dropout(dropout)
         self.linear_out = nn.Linear(d_model, num_joints_out*3)
 
         self.d_model = d_model
@@ -385,12 +401,47 @@ class LiftFormer(nn.Module):
     
     def forward(self, x):
         sz = x.shape[:3]
-        x = torch.flatten(x, start_dim=2) # from [b, n, 17, 2] to [b, n, 34]
+        x = torch.flatten(x, start_dim=2) # from [b, n, 15, 2] to [b, n, 30]
+
         x = self.pe(self.linear_in(x))
         x = self.liftformer(x) 
-        x = self.linear_out(x)
-        ran = [13, x.size(1)-13]
-        x = x[:, ran[0]:ran[1], :] # [b,n-26,45]
+        x = self.linear_out(self.dropout(x))
+
 
         return x.reshape(sz[0], -1, self.num_joints_out, 3)
         
+
+class fullTransformer(nn.Module):
+    def __init__(self, d_model=1, nhead=1,
+                    num_enc_layers=6, num_dec_layers=6,
+                    num_joints_in=15, num_joints_out=15,
+                    dim_feedforward=1024, dropout=0.1):
+        super().__init__()
+        self.pe = PositionalEncoder(d_model)
+
+        self.embed = nn.Embedding(10, d_model)
+        if torch.cuda.is_available():
+            self.embed = nn.Embedding(10, d_model).cuda()
+
+        self.transformer = nn.Transformer(d_model, nhead, 
+                                    num_enc_layers, num_dec_layers,
+                                    dim_feedforward, dropout)
+        self.linear = nn.Linear(d_model, 1, bias=False)
+
+        self.d_model = d_model
+        self.nhead = nhead
+        self.num_joints_in = num_joints_in
+        self.num_joints_out = num_joints_out
+        
+    
+    def forward(self, src):
+        sz = src.shape[:3] #(128, 1, 15)
+        
+        src = self.pe(src.permute(2, 1, 0))
+        tgt = torch.zeros(self.num_joints_out*3, sz[1], sz[0]).cuda()
+        assert src.shape[1:] == tgt.shape[1:], "{},{}".format(src.shape, tgt.shape)
+
+        out = self.transformer(src, tgt) # (45, rf, 128)
+        out = out.permute(1, 2, 0)
+
+        return out.reshape(sz[0], sz[1], self.num_joints_out, 3)
