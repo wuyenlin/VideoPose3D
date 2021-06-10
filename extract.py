@@ -29,16 +29,15 @@ class All:
         if save_img:
             try:
                 os.system("ffmpeg -i {} -r 60 {}".format(self.avi_path, filename))
-
                 print("Saving frame {},{},{},{}".format(self.S,self.action,self.num,self.seq))
             except FileExistsError:
                 print("File exists")
 
 
 if __name__ == "__main__": 
-    action_list = ["Walking", "Jog", "ThrowCatch", "Gestures", "Box"]
-    for char in [1,2,3]:
+    action_list = ["Box"]
+    for char in [1]:
         for action in action_list:
-            c = All(char, action, 1, 1)
+            c = All(char, action, 1, 3)
             c.save_cropped()
     # os.system("ffmpeg -i dataset/walking.avi -r 60 dataset/S1/Image/$frame%04d.jpg")
