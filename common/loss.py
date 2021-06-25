@@ -7,6 +7,10 @@
 
 import torch
 import numpy as np
+try:
+    from common.human import *
+except:
+    from human import *
 
 def mpjpe(predicted, target):
     """
@@ -182,3 +186,6 @@ def meae(predicted, target):
             pred_euler[b,bone,:] = torch.tensor(euler_from_rot(predicted[b,bone]))
             tar_euler[b,bone,:] = torch.tensor(euler_from_rot(target[b,bone]))
     return torch.mean(torch.sum(pred_euler - tar_euler, dim=2))
+
+if __name__ == "__main__":
+    pass
