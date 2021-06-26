@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 #
 
+from home.ylwu.Documents.venv.VideoPose3D.common.misc import convert_gt
 import numpy as np
 
 from common.arguments import parse_args
@@ -23,6 +24,8 @@ from common.loss import *
 from common.generators import ChunkedGenerator, UnchunkedGenerator
 from time import time
 from common.utils import deterministic_random
+from common.human import *
+from common.misc import *
 
 args = parse_args()
 print(args)
@@ -707,6 +710,17 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
 
             # Compute velocity error
             epoch_loss_3d_vel += inputs_3d.shape[0]*inputs_3d.shape[1] * mean_velocity_error(predicted_3d_pos, inputs)
+
+            # convert bone kpts (17,3) to rotation matrix (16,9)
+            h = Human(1.8, "cpu")
+            model = h.update_pose()
+            t_info = vectorize(model)[:,:3]
+            pred = torch.zeros(predicted_3d_pos[0], predicted_3d_pos[1], 16, 9)
+            tar = torch.zeros(inputs_3d[0], inputs_3d[1], 16, 9)
+            for pose in range(predicted_3d_pos.shape[1]):
+                pred[0,pose,:,:] = convert_gt(predicted_3d_pos[0,pose,:,:], t_info, dataset="h36m")
+                tar[0,pose,:,:] = convert_gt(inputs_3d[0,pose,:,:], t_info, dataset="h36m")
+                
 
             # new metrics
             n1 = maev(predicted_3d_pos[0], inputs_3d[0])
