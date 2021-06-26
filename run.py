@@ -655,6 +655,10 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
     epoch_loss_3d_pos_procrustes = 0
     epoch_loss_3d_pos_scale = 0
     epoch_loss_3d_vel = 0
+
+    epoch_loss_3d_n1 = 0
+    epoch_loss_3d_n2 = 0
+    epoch_loss_3d_n3 = 0
     with torch.no_grad():
         if not use_trajectory_model:
             model_pos.eval()
@@ -703,6 +707,16 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
 
             # Compute velocity error
             epoch_loss_3d_vel += inputs_3d.shape[0]*inputs_3d.shape[1] * mean_velocity_error(predicted_3d_pos, inputs)
+
+            # new metrics
+            n1 = maev(predicted_3d_pos, inputs_3d)
+            epoch_loss_3d_n1 += inputs_3d.shape[0]*inputs_3d.shape[1] * n1.item()
+            n2 = mbve(predicted_3d_pos, inputs_3d)
+            epoch_loss_3d_n2 += inputs_3d.shape[0]*inputs_3d.shape[1] * n2.item()
+            n3 = meae(predicted_3d_pos, inputs_3d)
+            epoch_loss_3d_n3 += inputs_3d.shape[0]*inputs_3d.shape[1] * n3.item()
+            
+
             
     if action is None:
         print('----------')
@@ -712,14 +726,21 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
     e2 = (epoch_loss_3d_pos_procrustes / N)*1000
     e3 = (epoch_loss_3d_pos_scale / N)*1000
     ev = (epoch_loss_3d_vel / N)*1000
+    
+    n1 = epoch_loss_3d_n1 / N
+    n2 = epoch_loss_3d_n2 / N
+    n3 = epoch_loss_3d_n3 / N
     print('Test time augmentation:', test_generator.augment_enabled())
     print('Protocol #1 Error (MPJPE):', e1, 'mm')
     print('Protocol #2 Error (P-MPJPE):', e2, 'mm')
     print('Protocol #3 Error (N-MPJPE):', e3, 'mm')
     print('Velocity Error (MPJVE):', ev, 'mm')
+    print('New Metric #1 Error (MAEV):', n1, '-')
+    print('New Metric #2 Error (MBVE):', n2, '-')
+    print('New Metric #3 Error (MEAE):', n3, 'rad')
     print('----------')
 
-    return e1, e2, e3, ev
+    return e1, e2, e3, ev, n1, n2, n3
 
 
 if args.render:
@@ -829,6 +850,10 @@ else:
         errors_p3 = []
         errors_vel = []
 
+        errors_n1 = []
+        errors_n2 = []
+        errors_n3 = []
+
         for action_key in actions.keys():
             if action_filter is not None:
                 found = False
@@ -843,16 +868,23 @@ else:
             gen = UnchunkedGenerator(None, poses_act, poses_2d_act,
                                      pad=pad, causal_shift=causal_shift, augment=args.test_time_augmentation,
                                      kps_left=kps_left, kps_right=kps_right, joints_left=joints_left, joints_right=joints_right)
-            e1, e2, e3, ev = evaluate(gen, action_key)
+            e1, e2, e3, ev, n1, n2, n3 = evaluate(gen, action_key)
             errors_p1.append(e1)
             errors_p2.append(e2)
             errors_p3.append(e3)
             errors_vel.append(ev)
 
+            errors_n1.append(n1)
+            errors_n2.append(n2)
+            errors_n3.append(n3)
+
         print('Protocol #1   (MPJPE) action-wise average:', round(np.mean(errors_p1), 1), 'mm')
         print('Protocol #2 (P-MPJPE) action-wise average:', round(np.mean(errors_p2), 1), 'mm')
         print('Protocol #3 (N-MPJPE) action-wise average:', round(np.mean(errors_p3), 1), 'mm')
         print('Velocity      (MPJVE) action-wise average:', round(np.mean(errors_vel), 2), 'mm')
+        print('New Metric #1   (MAEV) action-wise average:', round(np.mean(errors_n1), 1), '-')
+        print('New Metric #2   (MBVE) action-wise average:', round(np.mean(errors_n2), 1), '-')
+        print('New Metric #3   (MEAE) action-wise average:', round(np.mean(errors_n3), 1), 'rad')
 
     if not args.by_subject:
         run_evaluation(all_actions, action_filter)
