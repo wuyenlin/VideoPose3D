@@ -5,7 +5,6 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-from home.ylwu.Documents.venv.VideoPose3D.common.misc import convert_gt
 import numpy as np
 
 from common.arguments import parse_args
