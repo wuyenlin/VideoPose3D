@@ -9,8 +9,10 @@ import torch
 import numpy as np
 try:
     from common.human import *
+    from common.misc import *
 except:
     from human import *
+    from misc import *
 
 def mpjpe(predicted, target):
     """
@@ -151,9 +153,9 @@ def mbve(predicted, target):
     pred_info = torch.zeros(bs, num_bones, 3)
     tar_info = torch.zeros(bs, num_bones, 3)
 
-    pred = Human(1.8)
+    pred = Human(1.8, "cpu")
     pred_model = pred.update_pose(predicted)
-    tar = Human(1.8)
+    tar = Human(1.8, "cpu")
     tar_model = tar.update_pose(target)
     for b in range(bs):
         pred_info[b,:] = vectorize(pred_model)[:,:3]
@@ -183,9 +185,17 @@ def meae(predicted, target):
     tar_euler = torch.zeros(bs,num_bones,3)
     for b in range(bs):
         for bone in range(num_bones):
-            pred_euler[b,bone,:] = torch.tensor(euler_from_rot(predicted[b,bone]))
-            tar_euler[b,bone,:] = torch.tensor(euler_from_rot(target[b,bone]))
+            pred_euler[b,bone,:] = torch.tensor(rot_to_euler(predicted[b,bone]))
+            tar_euler[b,bone,:] = torch.tensor(rot_to_euler(target[b,bone]))
     return torch.mean(torch.sum(pred_euler - tar_euler, dim=2))
 
+
 if __name__ == "__main__":
-    pass
+    a = torch.tensor([0.707,-0.707,0,0.707,0.707,0,0,0,1])
+    a = a.repeat(16).reshape(1,16,9).to(torch.float32)
+    b = torch.eye(3).flatten()
+    b = b.repeat(16).reshape(1,16,9).to(torch.float32)
+
+    print(maev(a,b))
+    print(mbve(a,b))
+    print(meae(a,b))
