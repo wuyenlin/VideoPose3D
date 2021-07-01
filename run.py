@@ -185,6 +185,9 @@ model_pos = TemporalModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-
                             filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels,
                             dense=args.dense)
 
+device_list = [i for i in range(torch.cuda.device_count())]
+model_pos_train=nn.DataParallel(model_pos_train,device_ids=device_list) # multi-GPU
+model_pos=nn.DataParallel(model_pos,device_ids=device_list) # multi-GPU
 
 receptive_field = model_pos.receptive_field()
 print('INFO: Receptive field: {} frames'.format(receptive_field))
@@ -729,6 +732,14 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
             n3 = meae(pred[0], tar[0])
             epoch_loss_3d_n3 += inputs_3d.shape[0]*inputs_3d.shape[1] * n3.item()
             
+
+            # new metrics
+            n1 = maev(pred[0], tar[0])
+            epoch_loss_3d_n1 += inputs_3d.shape[0]*inputs_3d.shape[1] * n1.item()
+            n2 = mbve(pred[0], tar[0])
+            epoch_loss_3d_n2 += inputs_3d.shape[0]*inputs_3d.shape[1] * n2.item()
+            n3 = meae(pred[0], tar[0])
+            epoch_loss_3d_n3 += inputs_3d.shape[0]*inputs_3d.shape[1] * n3.item()
 
             
     if action is None:
