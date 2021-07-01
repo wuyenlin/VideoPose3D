@@ -160,8 +160,9 @@ def mbve(predicted, target):
     for b in range(bs):
         pred_info[b,:] = vectorize(pred_model)[:,:3]
         tar_info[b,:] = vectorize(tar_model)[:,:3]
-    mbve = torch.norm(pred_info - tar_info)
-    return mbve
+    #mbve = torch.norm(pred_info - tar_info)
+    #return mbve
+    return torch.mean(torch.norm(pred_info - tar_info, dim=len(tar_info.shape)-1))
 
 
 # 3. Decompose SO(3) into Euler angles
@@ -185,8 +186,8 @@ def meae(predicted, target):
     tar_euler = torch.zeros(bs,num_bones,3)
     for b in range(bs):
         for bone in range(num_bones):
-            pred_euler[b,bone,:] = torch.tensor(rot_to_euler(predicted[b,bone]))
-            tar_euler[b,bone,:] = torch.tensor(rot_to_euler(target[b,bone]))
+            pred_euler[b,bone,:] = abs(torch.tensor(rot_to_euler(predicted[b,bone])))
+            tar_euler[b,bone,:] = abs(torch.tensor(rot_to_euler(target[b,bone])))
     return torch.mean(torch.sum(pred_euler - tar_euler, dim=2))
 
 
