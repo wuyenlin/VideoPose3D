@@ -153,15 +153,13 @@ def mbve(predicted, target):
     pred_info = torch.zeros(bs, num_bones, 3)
     tar_info = torch.zeros(bs, num_bones, 3)
 
-    pred = Human(1.8, "cpu")
-    pred_model = pred.update_pose(predicted)
-    tar = Human(1.8, "cpu")
-    tar_model = tar.update_pose(target)
     for b in range(bs):
-        pred_info[b,:] = vectorize(pred_model)[:,:3]
-        tar_info[b,:] = vectorize(tar_model)[:,:3]
-    #mbve = torch.norm(pred_info - tar_info)
-    #return mbve
+        pred = Human(1.8, "cpu")
+        pred_model = pred.update_pose(predicted[b])
+        pred_info[b,:] = vectorize(pred_model, "h36m")[:,:3]
+        tar = Human(1.8, "cpu")
+        tar_model = tar.update_pose(target[b])
+        tar_info[b,:] = vectorize(tar_model, "h36m")[:,:3]
     return torch.mean(torch.norm(pred_info - tar_info, dim=len(tar_info.shape)-1))
 
 
