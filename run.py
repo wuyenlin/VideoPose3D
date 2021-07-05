@@ -713,7 +713,7 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
             # convert bone kpts (17,3) to rotation matrix (16,9)
             h = Human(1.8, "cpu")
             model = h.update_pose()
-            t_info = vectorize(model)[:,:3]
+            t_info = vectorize(model, "h36m")[:,:3]
 
             inputs_3d = inputs_3d.squeeze(0)
             pred = torch.zeros(predicted_3d_pos.shape[0], 16, 9)
